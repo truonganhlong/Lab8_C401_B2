@@ -177,8 +177,28 @@ def rerank(
     - Dense/hybrid trả về nhiều chunk nhưng có noise
     - Muốn chắc chắn chỉ 3-5 chunk tốt nhất vào prompt
     """
-    # TODO Sprint 3: Implement rerank
-    # Tạm thời trả về top_k đầu tiên (không rerank)
+    # ── BƯỚC 0: Guard clause ──────────────────────────────────────────
+    if not candidates:
+        return []
+
+    # ── BƯỚC 1: Load cross-encoder model ─────────────────────────────
+    model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+
+    # ── BƯỚC 2: Tạo pairs [query, chunk_text] ────────────────────────
+    pairs = [[query, chunk["text"]] for chunk in candidates]
+
+    # ── BƯỚC 3: Chấm điểm từng pair ──────────────────────────────────
+    scores = model.predict(pairs)
+
+    # ── BƯỚC 4: Gắn score vào từng chunk ─────────────────────────────
+    for chunk, score in zip(candidates, scores):
+        chunk["rerank_score"] = float(score)
+
+    # ── BƯỚC 5: Sort theo score giảm dần ─────────────────────────────
+    ranked = sorted(candidates, key=lambda x: x["rerank_score"], reverse=True)
+
+    # ── BƯỚC 6: Trả về top_k tốt nhất ────────────────────────────────
+    return ranked[:top_k]
     return candidates[:top_k]
 
 
@@ -458,9 +478,9 @@ if __name__ == "__main__":
             print(f"Lỗi: {e}")
 
     # Uncomment sau khi Sprint 3 hoàn thành:
-    # print("\n--- Sprint 3: So sánh strategies ---")
-    # compare_retrieval_strategies("Approval Matrix để cấp quyền là tài liệu nào?")
-    # compare_retrieval_strategies("ERR-403-AUTH")
+    print("\n--- Sprint 3: So sánh strategies ---")
+    compare_retrieval_strategies("Approval Matrix để cấp quyền là tài liệu nào?")
+    compare_retrieval_strategies("ERR-403-AUTH")
 
     print("\n\nViệc cần làm Sprint 2:")
     print("  1. Implement retrieve_dense() — query ChromaDB")
