@@ -6,7 +6,7 @@
 |-----|---------|-------|
 | Lê Thành Long | Tech Lead, Eval Owner | lethanhlong9a1819@gmail.com |
 | Đỗ Việt Anh | Retrieval Owner, Group Report | vietanh201004@gmail.com |
-| Trương Anh Long | Retrieval Owner, Eval Owner| truonganhlong.1209@gmail.com |
+| Trương Anh Long | Retrieval Owner | truonganhlong.1209@gmail.com |
 | Đỗ Xuân Bằng | Indexing Owner | doxuanbang14122005@gmail.com |
 | Lã Thị Linh | Documentation Owner | lalinhkhmt@gmail.com |
 
@@ -93,7 +93,7 @@ Variant **tốt hơn rõ rệt** về mặt Completeness. Việc tăng 0.3 đi�
 | Lê Thành Long | Tech Lead, Review kiến trúc, Quản lý tiến độ, Eval Owner | All |
 | Đỗ Xuân Bằng | Indexing Pipeline (Preprocessing, Semantic Chunking) | 1 |
 | Đỗ Việt Anh | Baseline RAG, Grounded Prompt engineering, Abstention logic, Group Report | 2 |
-| Trương Anh Long | Tuning (Rerank implementation), Evaluation (RAGAS), Eval Owner | 3, 4 |
+| Trương Anh Long | Tuning (Rerank implementation) | 3 |
 | Lã Thị Linh | Documentation, Tuning Log, Architecture Diagram | 4 |
 
 **Điều nhóm làm tốt:**
