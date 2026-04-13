@@ -17,12 +17,16 @@ A/B Rule (từ slide):
   Đổi đồng thời chunking + hybrid + rerank + prompt = không biết biến nào có tác dụng.
 """
 
+import os
 import json
 import csv
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from dotenv import load_dotenv
 from rag_answer import rag_answer
+
+load_dotenv()
 
 # =============================================================================
 # CẤU HÌNH
@@ -49,6 +53,32 @@ VARIANT_CONFIG = {
     "use_rerank": True,           # Hoặc False nếu variant là hybrid không rerank
     "label": "variant_hybrid_rerank",
 }
+
+
+# =============================================================================
+# HELPER: LLM-AS-JUDGE
+# =============================================================================
+
+def _llm_judge(prompt: str) -> Dict[str, Any]:
+    """Gọi OpenAI để chấm điểm và trả về JSON {score, reason}."""
+    from openai import OpenAI
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    response = client.chat.completions.create(
+        model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        max_completion_tokens=256,
+    )
+    raw = response.choices[0].message.content.strip()
+    # Tìm JSON trong output (LLM có thể bọc thêm văn bản)
+    import re
+    match = re.search(r'\{[^}]+\}', raw, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+    return {"score": None, "reason": raw}
 
 
 # =============================================================================
@@ -88,12 +118,30 @@ def score_faithfulness(
 
     Trả về dict với: score (1-5) và notes (lý do)
     """
-    # TODO Sprint 4: Implement scoring
-    # Tạm thời trả về None (yêu cầu chấm thủ công)
-    return {
-        "score": None,
-        "notes": "TODO: Chấm thủ công hoặc implement LLM-as-Judge",
-    }
+    # LLM-as-Judge: chấm faithfulness tự động
+    chunks_text = "\n---\n".join([c.get("text", "")[:300] for c in chunks_used[:5]])
+    prompt = f"""You are an evaluation judge. Given these retrieved chunks and the model's answer, rate the FAITHFULNESS on a scale of 1-5.
+5 = answer is completely grounded in the provided context, no fabricated info.
+4 = nearly all grounded, 1 minor uncertain detail.
+3 = mostly grounded, some info may come from model knowledge.
+2 = significant info not in chunks.
+1 = answer is fabricated, not grounded at all.
+
+Retrieved chunks:
+{chunks_text}
+
+Answer:
+{answer}
+
+Output valid JSON only: {{"score": <int 1-5>, "reason": "<brief explanation>"}}"""
+    try:
+        result = _llm_judge(prompt)
+        return {
+            "score": result.get("score"),
+            "notes": result.get("reason", ""),
+        }
+    except Exception as e:
+        return {"score": None, "notes": f"LLM-judge error: {e}"}
 
 
 def score_answer_relevance(
@@ -111,12 +159,29 @@ def score_answer_relevance(
       2: Trả lời lạc đề một phần
       1: Không trả lời câu hỏi
 
-    TODO Sprint 4: Implement tương tự score_faithfulness
     """
-    return {
-        "score": None,
-        "notes": "TODO: Implement score_answer_relevance",
-    }
+    prompt = f"""You are an evaluation judge. Given the user's question and the model's answer, rate the ANSWER RELEVANCE on a scale of 1-5.
+5 = answer directly and completely addresses the question.
+4 = mostly relevant, missing minor details.
+3 = related but not focused on the core question.
+2 = partially off-topic.
+1 = does not answer the question at all.
+
+Question:
+{query}
+
+Answer:
+{answer}
+
+Output valid JSON only: {{"score": <int 1-5>, "reason": "<brief explanation>"}}"""
+    try:
+        result = _llm_judge(prompt)
+        return {
+            "score": result.get("score"),
+            "notes": result.get("reason", ""),
+        }
+    except Exception as e:
+        return {"score": None, "notes": f"LLM-judge error: {e}"}
 
 
 def score_context_recall(
@@ -198,10 +263,31 @@ def score_completeness(
          Rate completeness 1-5. Are all key points covered?
          Output: {'score': int, 'missing_points': [str]}"
     """
-    return {
-        "score": None,
-        "notes": "TODO: Implement score_completeness (so sánh với expected_answer)",
-    }
+    prompt = f"""You are an evaluation judge. Compare the model's answer with the expected answer. Rate COMPLETENESS on a scale of 1-5.
+5 = answer covers all key points from the expected answer.
+4 = missing 1 minor detail.
+3 = missing some important info.
+2 = missing many important points.
+1 = missing most core content.
+
+Question:
+{query}
+
+Expected Answer:
+{expected_answer}
+
+Model's Answer:
+{answer}
+
+Output valid JSON only: {{"score": <int 1-5>, "reason": "<brief explanation>"}}"""
+    try:
+        result = _llm_judge(prompt)
+        return {
+            "score": result.get("score"),
+            "notes": result.get("reason", ""),
+        }
+    except Exception as e:
+        return {"score": None, "notes": f"LLM-judge error: {e}"}
 
 
 # =============================================================================
@@ -486,30 +572,30 @@ if __name__ == "__main__":
         print("Pipeline chưa implement. Hoàn thành Sprint 2 trước.")
         baseline_results = []
 
-    # --- Chạy Variant (sau khi Sprint 3 hoàn thành) ---
-    # TODO Sprint 4: Uncomment sau khi implement variant trong rag_answer.py
-    # print("\n--- Chạy Variant ---")
-    # variant_results = run_scorecard(
-    #     config=VARIANT_CONFIG,
-    #     test_questions=test_questions,
-    #     verbose=True,
-    # )
-    # variant_md = generate_scorecard_summary(variant_results, VARIANT_CONFIG["label"])
-    # (RESULTS_DIR / "scorecard_variant.md").write_text(variant_md, encoding="utf-8")
+    # --- Chạy Variant ---
+    print("\n--- Chạy Variant ---")
+    variant_results = run_scorecard(
+        config=VARIANT_CONFIG,
+        test_questions=test_questions,
+        verbose=True,
+    )
+    variant_md = generate_scorecard_summary(variant_results, VARIANT_CONFIG["label"])
+    (RESULTS_DIR / "scorecard_variant.md").write_text(variant_md, encoding="utf-8")
+    print(f"Scorecard variant lưu tại: {RESULTS_DIR / 'scorecard_variant.md'}")
 
     # --- A/B Comparison ---
-    # TODO Sprint 4: Uncomment sau khi có cả baseline và variant
-    # if baseline_results and variant_results:
-    #     compare_ab(
-    #         baseline_results,
-    #         variant_results,
-    #         output_csv="ab_comparison.csv"
-    #     )
+    if baseline_results and variant_results:
+        compare_ab(
+            baseline_results,
+            variant_results,
+            output_csv="ab_comparison.csv"
+        )
 
-    print("\n\nViệc cần làm Sprint 4:")
-    print("  1. Hoàn thành Sprint 2 + 3 trước")
-    print("  2. Chấm điểm thủ công hoặc implement LLM-as-Judge trong score_* functions")
-    print("  3. Chạy run_scorecard(BASELINE_CONFIG)")
-    print("  4. Chạy run_scorecard(VARIANT_CONFIG)")
-    print("  5. Gọi compare_ab() để thấy delta")
-    print("  6. Cập nhật docs/tuning-log.md với kết quả và nhận xét")
+    print("\n\nSprint 4 hoàn thành!")
+    print("Kết quả đã lưu tại:")
+    print(f"  - {RESULTS_DIR / 'scorecard_baseline.md'}")
+    print(f"  - {RESULTS_DIR / 'scorecard_variant.md'}")
+    print(f"  - {RESULTS_DIR / 'ab_comparison.csv'}")
+    print("\nViệc cần làm tiếp:")
+    print("  1. Cập nhật docs/architecture.md")
+    print("  2. Cập nhật docs/tuning-log.md với kết quả và nhận xét")

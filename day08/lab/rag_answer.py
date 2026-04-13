@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 import chromadb
 from index import get_embedding, CHROMA_DB_DIR
 from openai import OpenAI
+from sentence_transformers import CrossEncoder
 
 load_dotenv()
 
@@ -199,7 +200,6 @@ def rerank(
 
     # ── BƯỚC 6: Trả về top_k tốt nhất ────────────────────────────────
     return ranked[:top_k]
-    return candidates[:top_k]
 
 
 # =============================================================================

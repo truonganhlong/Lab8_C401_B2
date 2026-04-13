@@ -1,24 +1,23 @@
 # Architecture — RAG Pipeline (Day 08 Lab)
 
-> Template: Điền vào các mục này khi hoàn thành từng sprint.
-> Deliverable của Documentation Owner.
-
 ## 1. Tổng quan kiến trúc
 
 ```
-[Raw Docs]
+[Raw Docs: 5 policy files .txt]
     ↓
 [index.py: Preprocess → Chunk → Embed → Store]
     ↓
-[ChromaDB Vector Store]
+[ChromaDB Vector Store (cosine similarity)]
     ↓
 [rag_answer.py: Query → Retrieve → Rerank → Generate]
     ↓
 [Grounded Answer + Citation]
+    ↓
+[eval.py: Scorecard + A/B Comparison (LLM-as-Judge)]
 ```
 
 **Mô tả ngắn gọn:**
-> TODO: Mô tả hệ thống trong 2-3 câu. Nhóm xây gì? Cho ai dùng? Giải quyết vấn đề gì?
+Hệ thống là trợ lý nội bộ cho khối CS + IT Helpdesk, trả lời câu hỏi về chính sách hoàn tiền, SLA ticket, quy trình cấp quyền và FAQ. Pipeline RAG đảm bảo mọi câu trả lời đều dựa trên chứng cứ được retrieve có kiểm soát, tránh hallucination.
 
 ---
 
@@ -26,23 +25,26 @@
 
 ### Tài liệu được index
 | File | Nguồn | Department | Số chunk |
-|------|-------|-----------|---------|
-| `policy_refund_v4.txt` | policy/refund-v4.pdf | CS | TODO |
-| `sla_p1_2026.txt` | support/sla-p1-2026.pdf | IT | TODO |
-| `access_control_sop.txt` | it/access-control-sop.md | IT Security | TODO |
-| `it_helpdesk_faq.txt` | support/helpdesk-faq.md | IT | TODO |
-| `hr_leave_policy.txt` | hr/leave-policy-2026.pdf | HR | TODO |
+|------|-------|-----------| ---------|
+| `policy_refund_v4.txt` | policy/refund-v4.pdf | CS | 6 |
+| `sla_p1_2026.txt` | support/sla-p1-2026.pdf | IT | 5 |
+| `access_control_sop.txt` | it/access-control-sop.md | IT Security | 7 |
+| `it_helpdesk_faq.txt` | support/helpdesk-faq.md | IT | 6 |
+| `hr_leave_policy.txt` | hr/leave-policy-2026.pdf | HR | 6 |
+
+**Tổng: 30 chunks**
 
 ### Quyết định chunking
 | Tham số | Giá trị | Lý do |
 |---------|---------|-------|
-| Chunk size | TODO tokens | TODO |
-| Overlap | TODO tokens | TODO |
-| Chunking strategy | Heading-based / paragraph-based | TODO |
-| Metadata fields | source, section, effective_date, department, access | Phục vụ filter, freshness, citation |
+| Chunk size | 400 tokens (~1600 ký tự) | Cân bằng giữa đủ ngữ cảnh và không quá dài cho embedding |
+| Overlap | Không dùng (paragraph-based) | Chia theo ranh giới tự nhiên nên overlap không cần thiết |
+| Chunking strategy | 2 tầng: Section heading → Paragraph | Ưu tiên giữ nguyên 1 section = 1 chunk. Nếu section quá dài (>1600 ký tự) thì chia tiếp theo `\n\n` (paragraph), fallback `\n` |
+| Metadata fields | source, section, effective_date, department, access | Phục vụ filter, freshness check, citation trong answer |
 
 ### Embedding model
-- **Model**: TODO (OpenAI text-embedding-3-small / paraphrase-multilingual-MiniLM-L12-v2)
+- **Model**: Jina Embeddings v5 (`jina-embeddings-v5-text-small`) qua REST API
+- **Task adapter**: `retrieval.passage` khi index, `retrieval.query` khi search
 - **Vector store**: ChromaDB (PersistentClient)
 - **Similarity metric**: Cosine
 
@@ -61,15 +63,13 @@
 ### Variant (Sprint 3)
 | Tham số | Giá trị | Thay đổi so với baseline |
 |---------|---------|------------------------|
-| Strategy | TODO (hybrid / dense) | TODO |
-| Top-k search | TODO | TODO |
-| Top-k select | TODO | TODO |
-| Rerank | TODO (cross-encoder / MMR) | TODO |
-| Query transform | TODO (expansion / HyDE / decomposition) | TODO |
+| Strategy | Hybrid (dense fallback) | Thêm BM25 sparse search |
+| Top-k search | 10 | Giữ nguyên |
+| Top-k select | 3 | Giữ nguyên |
+| Rerank | Cross-encoder (ms-marco-MiniLM-L-6-v2) | Bật rerank sau retrieve |
 
-**Lý do chọn variant này:**
-> TODO: Giải thích tại sao chọn biến này để tune.
-> Ví dụ: "Chọn hybrid vì corpus có cả câu tự nhiên (policy) lẫn mã lỗi và tên chuyên ngành (SLA ticket P1, ERR-403)."
+**Lý do chọn variant hybrid + rerank:**
+Corpus có cả câu tự nhiên (policy, quy trình) lẫn keyword/mã chuyên ngành (P1, Level 3, ERR-403). Dense embedding có thể bỏ lỡ exact match cho các keyword này. Hybrid kết hợp BM25 để bắt keyword chính xác. Rerank giúp lọc noise từ kết quả search rộng, đảm bảo chỉ top-3 chunk tốt nhất được đưa vào prompt.
 
 ---
 
@@ -79,8 +79,9 @@
 ```
 Answer only from the retrieved context below.
 If the context is insufficient, say you do not know.
-Cite the source field when possible.
+Cite the source field (in brackets like [1]) when possible.
 Keep your answer short, clear, and factual.
+Respond in the same language as the question.
 
 Question: {query}
 
@@ -96,15 +97,28 @@ Answer:
 ### LLM Configuration
 | Tham số | Giá trị |
 |---------|---------|
-| Model | TODO (gpt-4o-mini / gemini-1.5-flash) |
-| Temperature | 0 (để output ổn định cho eval) |
+| Model | gpt-5.4-mini (OpenAI) |
+| Temperature | 0 (output ổn định cho eval) |
 | Max tokens | 512 |
 
 ---
 
-## 5. Failure Mode Checklist
+## 5. Evaluation (Sprint 4)
 
-> Dùng khi debug — kiểm tra lần lượt: index → retrieval → generation
+### Scoring method: LLM-as-Judge
+Dùng OpenAI gpt-4o-mini làm judge tự động cho 3 metrics:
+- **Faithfulness**: Answer có bám đúng context hay bịa?
+- **Answer Relevance**: Answer có trả lời đúng câu hỏi?
+- **Completeness**: Answer có đủ thông tin so với expected?
+
+Metric thứ 4 — **Context Recall** — tính tự động bằng code: kiểm tra expected sources có nằm trong retrieved chunks không.
+
+### A/B Comparison
+So sánh baseline (dense, no rerank) vs variant (hybrid, rerank) trên cùng 10 test questions. Chỉ đổi MỘT biến mỗi lần.
+
+---
+
+## 6. Failure Mode Checklist
 
 | Failure Mode | Triệu chứng | Cách kiểm tra |
 |-------------|-------------|---------------|
@@ -116,21 +130,20 @@ Answer:
 
 ---
 
-## 6. Diagram (tùy chọn)
-
-> TODO: Vẽ sơ đồ pipeline nếu có thời gian. Có thể dùng Mermaid hoặc drawio.
+## 7. Pipeline Diagram
 
 ```mermaid
 graph LR
-    A[User Query] --> B[Query Embedding]
-    B --> C[ChromaDB Vector Search]
+    A[User Query] --> B[Jina v5 Embed<br/>task=retrieval.query]
+    B --> C[ChromaDB<br/>Vector Search]
     C --> D[Top-10 Candidates]
     D --> E{Rerank?}
-    E -->|Yes| F[Cross-Encoder]
+    E -->|Yes| F[Cross-Encoder<br/>ms-marco-MiniLM]
     E -->|No| G[Top-3 Select]
     F --> G
-    G --> H[Build Context Block]
+    G --> H[Build Context Block<br/>with citations]
     H --> I[Grounded Prompt]
-    I --> J[LLM]
+    I --> J[GPT-5.4-mini<br/>temperature=0]
     J --> K[Answer + Citation]
+    K --> L[LLM-as-Judge<br/>4 metrics scoring]
 ```
