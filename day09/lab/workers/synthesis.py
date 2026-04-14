@@ -40,36 +40,22 @@ Quy tắc nghiêm ngặt:
 
 def _call_llm(messages: list) -> str:
     """
-    Gọi LLM để tổng hợp câu trả lời.
-    TODO Sprint 2: Implement với OpenAI hoặc Gemini.
+    Gọi LLM để tổng hợp câu trả lời dựa vào LLM_PROVIDER trong .env.
     """
-    # Option A: OpenAI
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.1,  # Low temperature để grounded
-            max_tokens=500,
-        )
-        return response.choices[0].message.content
-    except Exception:
-        pass
-
-    # Option B: Gemini
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        combined = "\n".join([m["content"] for m in messages])
-        response = model.generate_content(combined)
-        return response.text
-    except Exception:
-        pass
-
-    # Fallback: trả về message báo lỗi (không hallucinate)
-    return "[SYNTHESIS ERROR] Không thể gọi LLM. Kiểm tra API key trong .env."
+        api_key = os.getenv("OPENAI_API_KEY")
+        model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+        if api_key:
+            client = OpenAI(api_key=api_key)
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.1,
+            )
+            return response.choices[0].message.content
+    except Exception as e:
+        print(f"⚠️  OpenAI call failed: {e}")
 
 
 def _build_context(chunks: list, policy_result: dict) -> str:
@@ -81,72 +67,71 @@ def _build_context(chunks: list, policy_result: dict) -> str:
         for i, chunk in enumerate(chunks, 1):
             source = chunk.get("source", "unknown")
             text = chunk.get("text", "")
-            score = chunk.get("score", 0)
-            parts.append(f"[{i}] Nguồn: {source} (relevance: {score:.2f})\n{text}")
+            parts.append(f"Tài liệu [{source}]:\n{text}")
 
     if policy_result and policy_result.get("exceptions_found"):
-        parts.append("\n=== POLICY EXCEPTIONS ===")
+        parts.append("\n=== CÁC NGOẠI LỆ / QUY TẮC PHÁT HIỆN ===")
         for ex in policy_result["exceptions_found"]:
-            parts.append(f"- {ex.get('rule', '')}")
+            parts.append(f"- [{ex.get('type')}] {ex.get('rule')} (Source: {ex.get('source')})")
 
     if not parts:
-        return "(Không có context)"
+        return "(Không có dữ liệu context để trả lời)"
 
     return "\n\n".join(parts)
 
 
 def _estimate_confidence(chunks: list, answer: str, policy_result: dict) -> float:
     """
-    Ước tính confidence dựa vào:
-    - Số lượng và quality của chunks
-    - Có exceptions không
-    - Answer có abstain không
-
-    TODO Sprint 2: Có thể dùng LLM-as-Judge để tính confidence chính xác hơn.
+    Ước tính confidence (0.0 - 1.0).
     """
     if not chunks:
-        return 0.1  # Không có evidence → low confidence
+        return 0.1
+    
+    # Check for "sorry" or "not enough information" in answer
+    abstain_keywords = ["không đủ thông tin", "không tìm thấy", "xin lỗi", "tài liệu không đề cập"]
+    if any(kw in answer.lower() for kw in abstain_keywords):
+        return 0.2
 
-    if "Không đủ thông tin" in answer or "không có trong tài liệu" in answer.lower():
-        return 0.3  # Abstain → moderate-low
-
-    # Weighted average của chunk scores
+    # Score based on chunks
     if chunks:
         avg_score = sum(c.get("score", 0) for c in chunks) / len(chunks)
     else:
         avg_score = 0
+    
+    # If policy exceptions found, it's a specific case, usually higher confidence if rules matched
+    if policy_result and policy_result.get("exceptions_found"):
+        avg_score = max(avg_score, 0.8)
 
-    # Penalty nếu có exceptions (phức tạp hơn)
-    exception_penalty = 0.05 * len(policy_result.get("exceptions_found", []))
-
-    confidence = min(0.95, avg_score - exception_penalty)
-    return round(max(0.1, confidence), 2)
+    return round(min(0.98, avg_score), 2)
 
 
 def synthesize(task: str, chunks: list, policy_result: dict) -> dict:
     """
     Tổng hợp câu trả lời từ chunks và policy context.
-
-    Returns:
-        {"answer": str, "sources": list, "confidence": float}
     """
     context = _build_context(chunks, policy_result)
 
-    # Build messages
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": f"""Câu hỏi: {task}
+    user_prompt = f"""Câu hỏi: {task}
 
 {context}
 
-Hãy trả lời câu hỏi dựa vào tài liệu trên."""
-        }
+Hãy trả lời câu hỏi của người dùng một cách chính xác nhất dựa trên tài liệu trên. 
+Nếu có quy tắc cụ thể hoặc ngoại lệ nào được liệt kê trong 'NGOẠI LỆ', hãy ưu tiên áp dụng chúng.
+Trích dẫn nguồn bằng cách để tên file trong ngoặc vuông, ví dụ [policy_refund_v4.txt]."""
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt}
     ]
 
     answer = _call_llm(messages)
     sources = list({c.get("source", "unknown") for c in chunks})
+    # Add sources from policy_result if missing
+    if policy_result and policy_result.get("source"):
+        for s in policy_result["source"]:
+            if s not in sources:
+                sources.append(s)
+
     confidence = _estimate_confidence(chunks, answer, policy_result)
 
     return {
@@ -210,6 +195,14 @@ def run(state: dict) -> dict:
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Fix Windows terminal encoding
+    import sys
+    if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+        except Exception:
+            pass
+
     print("=" * 50)
     print("Synthesis Worker — Standalone Test")
     print("=" * 50)

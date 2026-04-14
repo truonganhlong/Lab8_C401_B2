@@ -17,6 +17,12 @@ Gọi độc lập để test:
 
 import os
 import sys
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Fix Protobuf version mismatch for local embeddings
+os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 # ─────────────────────────────────────────────
 # Worker Contract (xem contracts/worker_contracts.yaml)
@@ -30,45 +36,84 @@ DEFAULT_TOP_K = 3
 
 def _get_embedding_fn():
     """
-    Trả về embedding function.
-    TODO Sprint 1: Implement dùng OpenAI hoặc Sentence Transformers.
+    Trả về embedding function dựa vào cấu hình trong .env.
+    Mặc định ưu tiên Jina Embedding v5 theo yêu cầu người dùng.
     """
-    # Option A: Sentence Transformers (offline, không cần API key)
+    import requests
+    jina_key = os.getenv("JINA_API_KEY")
+
+    if jina_key:
+        def embed_jina(text: str) -> list:
+            url = "https://api.jina.ai/v1/embeddings"
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {jina_key}"
+            }
+            data = {
+                "model": "jina-embeddings-v5-text-small",
+                "input": [text],
+                "task": "retrieval.query",
+                "dimensions": 512,  # Có thể tùy chỉnh
+            }
+            try:
+                # Tăng timeout lên 20s cho Jina API
+                resp = requests.post(url, headers=headers, json=data, timeout=20)
+                if resp.status_code == 200:
+                    return resp.json()["data"][0]["embedding"]
+                else:
+                    print(f"⚠️  Jina API Error: {resp.status_code} - {resp.text}")
+            except Exception as e:
+                print(f"⚠️  Jina request failed: {e}")
+            
+            # Nếu Jina lỗi, trả về None để caller biết mà fallback
+            return None
+        return embed_jina
+
+    # --- FALLBACKS ---
+    provider = os.getenv("EMBEDDING_PROVIDER", "local").lower()
+
+    if provider == "openai":
+        try:
+            from openai import OpenAI
+            api_key = os.getenv("OPENAI_API_KEY")
+            if api_key:
+                client = OpenAI(api_key=api_key)
+                def embed_openai(text: str) -> list:
+                    resp = client.embeddings.create(input=text, model="text-embedding-3-small")
+                    return resp.data[0].embedding
+                return embed_openai
+        except ImportError:
+            pass
+
+    # Option: Sentence Transformers (local)
     try:
         from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-        def embed(text: str) -> list:
+        model_name = os.getenv("LOCAL_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        model = SentenceTransformer(model_name)
+        def embed_local(text: str) -> list:
             return model.encode([text])[0].tolist()
-        return embed
+        return embed_local
     except ImportError:
         pass
 
-    # Option B: OpenAI (cần API key)
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        def embed(text: str) -> list:
-            resp = client.embeddings.create(input=text, model="text-embedding-3-small")
-            return resp.data[0].embedding
-        return embed
-    except ImportError:
-        pass
-
-    # Fallback: random embeddings cho test (KHÔNG dùng production)
+    # Fallback: random embeddings
     import random
-    def embed(text: str) -> list:
+    def embed_fallback(text: str) -> list:
         return [random.random() for _ in range(384)]
-    print("⚠️  WARNING: Using random embeddings (test only). Install sentence-transformers.")
-    return embed
+    return embed_fallback
 
 
 def _get_collection():
     """
     Kết nối ChromaDB collection.
-    TODO Sprint 2: Đảm bảo collection đã được build từ Step 3 trong README.
+    Sử dụng đường dẫn tuyệt đối để tránh lỗi CWD.
     """
     import chromadb
-    client = chromadb.PersistentClient(path="./chroma_db")
+    # Đường dẫn tới thư mục lab/
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    chroma_path = os.path.join(base_dir, "chroma_db")
+    
+    client = chromadb.PersistentClient(path=chroma_path)
     try:
         collection = client.get_collection("day09_docs")
     except Exception:
@@ -77,7 +122,7 @@ def _get_collection():
             "day09_docs",
             metadata={"hnsw:space": "cosine"}
         )
-        print(f"⚠️  Collection 'day09_docs' chưa có data. Chạy index script trong README trước.")
+        print(f"⚠️  Collection 'day09_docs' chưa tìm thấy tại {chroma_path}.")
     return collection
 
 
@@ -94,8 +139,13 @@ def retrieve_dense(query: str, top_k: int = DEFAULT_TOP_K) -> list:
         list of {"text": str, "source": str, "score": float, "metadata": dict}
     """
     # TODO: Implement dense retrieval
+    
     embed = _get_embedding_fn()
     query_embedding = embed(query)
+
+    if query_embedding is None:
+        print(f"⚠️  {WORKER_NAME}: Embedding failed (possibly timeout or API error).")
+        return []
 
     try:
         collection = _get_collection()
@@ -184,6 +234,13 @@ def run(state: dict) -> dict:
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Fix Windows terminal encoding
+    if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+        except Exception:
+            pass
+
     print("=" * 50)
     print("Retrieval Worker — Standalone Test")
     print("=" * 50)
