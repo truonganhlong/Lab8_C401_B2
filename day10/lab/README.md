@@ -89,7 +89,7 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-**Lần đầu** SentenceTransformers có thể tải model `all-MiniLM-L6-v2` (~90MB) — cần mạng.
+**Embedding:** hỗ trợ cả `EMBEDDING_PROVIDER=jina` với `jina-embeddings-v5-text-small` và `EMBEDDING_PROVIDER=sentence_transformers` cho model local. Nếu dùng Jina, điền `JINA_API_KEY` trong `.env`; nếu dùng local thì lần đầu sẽ tải model về máy. Nên dùng `CHROMA_DB_PATH` riêng cho mỗi embedding model để tránh va chạm dimension giữa các index cũ/mới.
 
 ---
 

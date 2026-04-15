@@ -147,7 +147,7 @@ CSV mẫu có `exported_at` cũ — **FAIL là hợp lý**. Nhóm ghi trong runb
 Không. Baseline dùng retrieval + keyword. Nhóm có thể mở rộng LLM-judge (ghi rõ trong docs).
 
 **Thiếu GPU?**  
-`all-MiniLM-L6-v2` chạy CPU được; lab chỉ vài chục chunk.
+Nếu dùng local thì `sentence-transformers/all-MiniLM-L6-v2` chạy CPU được; nếu nhóm đang dùng API thì `jina-embeddings-v5-text-small` cũng phù hợp cho lab vài chục chunk.
 **`instructor_quick_check.py` là gì?**  
 Script đọc `grading_run.jsonl` / manifest để GV lọc nhanh lỗi format hoặc thiếu câu trước khi chấm sâu — không thay thế đánh giá chất lượng rule.
 

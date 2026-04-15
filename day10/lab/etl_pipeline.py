@@ -10,6 +10,9 @@ Chạy nhanh:
   cp .env.example .env
   python etl_pipeline.py run
 
+Sprint 1 ingest-only (không đụng bước embed):
+  python etl_pipeline.py run --skip-embed
+
 Chế độ inject (Sprint 3 — bỏ fix refund để expectation fail / eval xấu):
   python etl_pipeline.py run --no-refund-fix --skip-validate
 """
@@ -25,6 +28,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from embeddings import collection_embedding_metadata, describe_embedding_runtime, embed_passages, get_chroma_embedding_function
 from monitoring.freshness_check import check_manifest_freshness
 from quality.expectations import run_expectations
 from transform.cleaning_rules import clean_rows, load_raw_csv, write_cleaned_csv, write_quarantine_csv
@@ -56,6 +60,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     log_path = LOG_DIR / f"run_{run_id.replace(':', '-')}.log"
     for p in (LOG_DIR, MAN_DIR, QUAR_DIR, CLEAN_DIR):
         p.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("", encoding="utf-8")
 
     def log(msg: str) -> None:
         print(msg)
@@ -90,14 +95,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     if halt and args.skip_validate:
         log("WARN: expectation failed but --skip-validate → tiếp tục embed (chỉ dùng cho demo Sprint 3).")
 
-    # Embed
-    embed_ok = cmd_embed_internal(
-        cleaned_path,
-        run_id=run_id,
-        log=log,
-    )
-    if not embed_ok:
-        return 3
+    embed_ok = True
+    if args.skip_embed:
+        log("embed_skipped=true")
+    else:
+        embed_ok = cmd_embed_internal(
+            cleaned_path,
+            run_id=run_id,
+            log=log,
+        )
+        if not embed_ok:
+            return 3
 
     latest_exported = ""
     if cleaned:
@@ -113,9 +121,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         "latest_exported_at": latest_exported,
         "no_refund_fix": bool(args.no_refund_fix),
         "skipped_validate": bool(args.skip_validate and halt),
+        "skipped_embed": bool(args.skip_embed),
         "cleaned_csv": str(cleaned_path.relative_to(ROOT)),
         "chroma_path": os.environ.get("CHROMA_DB_PATH", "./chroma_db"),
         "chroma_collection": os.environ.get("CHROMA_COLLECTION", "day10_kb"),
+        "embedding_provider": os.environ.get("EMBEDDING_PROVIDER", "jina"),
+        "embedding_model": os.environ.get("EMBEDDING_MODEL", "jina-embeddings-v5-text-small"),
     }
     man_path = MAN_DIR / f"manifest_{run_id.replace(':', '-')}.json"
     man_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -131,14 +142,12 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_embed_internal(cleaned_csv: Path, *, run_id: str, log) -> bool:
     try:
         import chromadb
-        from chromadb.utils import embedding_functions
     except ImportError:
         log("ERROR: chromadb chưa cài. pip install -r requirements.txt")
         return False
 
     db_path = os.environ.get("CHROMA_DB_PATH", str(ROOT / "chroma_db"))
     collection_name = os.environ.get("CHROMA_COLLECTION", "day10_kb")
-    model_name = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
     from transform.cleaning_rules import load_raw_csv as load_csv  # same loader
 
@@ -148,8 +157,11 @@ def cmd_embed_internal(cleaned_csv: Path, *, run_id: str, log) -> bool:
         return True
 
     client = chromadb.PersistentClient(path=db_path)
-    emb = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=model_name)
-    col = client.get_or_create_collection(name=collection_name, embedding_function=emb)
+    col = client.get_or_create_collection(
+        name=collection_name,
+        metadata=collection_embedding_metadata(),
+        embedding_function=get_chroma_embedding_function(),
+    )
 
     ids = [r["chunk_id"] for r in rows]
     # Tránh “mồi cũ” trong top-k: xóa id không còn trong cleaned run này (index = snapshot publish).
@@ -171,8 +183,26 @@ def cmd_embed_internal(cleaned_csv: Path, *, run_id: str, log) -> bool:
         }
         for r in rows
     ]
+    log(f"embedding_runtime={describe_embedding_runtime()}")
+    embeddings = embed_passages(documents)
+    embedding_dim = len(embeddings[0]) if embeddings else 0
     # Idempotent: upsert theo chunk_id
-    col.upsert(ids=ids, documents=documents, metadatas=metadatas)
+    try:
+        col.upsert(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+    except Exception as e:
+        if "expecting embedding with dimension" not in str(e):
+            raise
+        log(
+            f"WARN: rebuilding collection '{collection_name}' after dimension mismatch; "
+            f"current run uses dimension={embedding_dim}."
+        )
+        client.delete_collection(name=collection_name)
+        col = client.get_or_create_collection(
+            name=collection_name,
+            metadata=collection_embedding_metadata(),
+            embedding_function=get_chroma_embedding_function(),
+        )
+        col.upsert(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
     log(f"embed_upsert count={len(ids)} collection={collection_name}")
     return True
 
@@ -204,6 +234,11 @@ def main() -> int:
         "--skip-validate",
         action="store_true",
         help="Vẫn embed khi expectation halt (chỉ phục vụ demo có chủ đích).",
+    )
+    p_run.add_argument(
+        "--skip-embed",
+        action="store_true",
+        help="Dừng sau ingest/clean/validate, không publish sang Chroma (hữu ích cho Sprint 1).",
     )
     p_run.set_defaults(func=cmd_run)
 
