@@ -1,7 +1,7 @@
 # Báo Cáo Cá Nhân — Lab Day 10: Data Pipeline & Observability
 
 **Họ và tên:** Đỗ Xuân Bằng  
-**Vai trò:** Embed
+**Vai trò:** Ingestion Owner
 **Ngày nộp:** 2026-04-15  
 **Độ dài yêu cầu:** 400–650 từ
 
