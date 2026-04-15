@@ -3,7 +3,36 @@
 
 version: "1.0"
 dataset: "kb_chunk_export"
-owner_team: "__TODO__"
+owner_team: "Data Platform + Knowledge Ops"
+
+source_map:
+  - source: "data/raw/policy_export_dirty.csv"
+    ingest_method: "batch_csv_export"
+    primary_failure_modes:
+      - "duplicate_chunk_text"
+      - "missing_effective_date"
+      - "unknown_doc_id"
+      - "invalid_effective_date_format"
+    metrics:
+      - "raw_records"
+      - "cleaned_records"
+      - "quarantine_records"
+  - source: "data/docs/policy_refund_v4.txt"
+    ingest_method: "canonical_reference_text"
+    primary_failure_modes:
+      - "stale_refund_window_14d"
+      - "version_drift"
+    metrics:
+      - "refund_no_stale_14d_window"
+      - "hits_forbidden.q_refund_window"
+  - source: "data/docs/hr_leave_policy.txt"
+    ingest_method: "canonical_reference_text"
+    primary_failure_modes:
+      - "stale_hr_policy_effective_date"
+      - "stale_10d_annual_leave_text"
+    metrics:
+      - "hr_leave_no_stale_10d_annual"
+      - "quarantine_records"
 
 schema_cleaned:
   chunk_id:
@@ -36,7 +65,7 @@ quality_rules:
 freshness:
   measured_at: "publish"  # ingest | cleaned | publish
   sla_hours: 24
-  alert_channel: "__TODO__"
+  alert_channel: "artifacts/logs + manifest freshness check"
 
 canonical_sources:
   - path: "data/docs/policy_refund_v4.txt"

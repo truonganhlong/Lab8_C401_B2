@@ -10,6 +10,9 @@ Chạy nhanh:
   cp .env.example .env
   python etl_pipeline.py run
 
+Sprint 1 ingest-only (không đụng bước embed):
+  python etl_pipeline.py run --skip-embed
+
 Chế độ inject (Sprint 3 — bỏ fix refund để expectation fail / eval xấu):
   python etl_pipeline.py run --no-refund-fix --skip-validate
 """
@@ -56,6 +59,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     log_path = LOG_DIR / f"run_{run_id.replace(':', '-')}.log"
     for p in (LOG_DIR, MAN_DIR, QUAR_DIR, CLEAN_DIR):
         p.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("", encoding="utf-8")
 
     def log(msg: str) -> None:
         print(msg)
@@ -90,14 +94,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     if halt and args.skip_validate:
         log("WARN: expectation failed but --skip-validate → tiếp tục embed (chỉ dùng cho demo Sprint 3).")
 
-    # Embed
-    embed_ok = cmd_embed_internal(
-        cleaned_path,
-        run_id=run_id,
-        log=log,
-    )
-    if not embed_ok:
-        return 3
+    embed_ok = True
+    if args.skip_embed:
+        log("embed_skipped=true")
+    else:
+        embed_ok = cmd_embed_internal(
+            cleaned_path,
+            run_id=run_id,
+            log=log,
+        )
+        if not embed_ok:
+            return 3
 
     latest_exported = ""
     if cleaned:
@@ -113,6 +120,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "latest_exported_at": latest_exported,
         "no_refund_fix": bool(args.no_refund_fix),
         "skipped_validate": bool(args.skip_validate and halt),
+        "skipped_embed": bool(args.skip_embed),
         "cleaned_csv": str(cleaned_path.relative_to(ROOT)),
         "chroma_path": os.environ.get("CHROMA_DB_PATH", "./chroma_db"),
         "chroma_collection": os.environ.get("CHROMA_COLLECTION", "day10_kb"),
@@ -204,6 +212,11 @@ def main() -> int:
         "--skip-validate",
         action="store_true",
         help="Vẫn embed khi expectation halt (chỉ phục vụ demo có chủ đích).",
+    )
+    p_run.add_argument(
+        "--skip-embed",
+        action="store_true",
+        help="Dừng sau ingest/clean/validate, không publish sang Chroma (hữu ích cho Sprint 1).",
     )
     p_run.set_defaults(func=cmd_run)
 
